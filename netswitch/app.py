@@ -19,6 +19,7 @@ from .config import (
     save_settings,
 )
 from .dialogs import ProfileDialog
+from .icons import set_window_icon
 from .manager import ManagerWindow
 from .netinfo import (
     Adapter,
@@ -74,6 +75,7 @@ class Application:
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title("网络快捷切换")
+        set_window_icon(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         apply_theme(self.root)
         try:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 
-from .win32 import gdi32, get_dpi_for_system, user32
+from .win32 import app_icon_path, gdi32, get_dpi_for_system, user32
 
 
 class ICONINFO(ctypes.Structure):
@@ -77,6 +77,18 @@ gdi32.LineTo.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
 SM_CXSMICON = 49
 NULL_PEN = 0x00A8
 BLACKNESS = 0x00000042
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x0010
+
+user32.LoadImageW.restype = wintypes.HANDLE
+user32.LoadImageW.argtypes = [
+    wintypes.HINSTANCE,
+    wintypes.LPCWSTR,
+    wintypes.UINT,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.UINT,
+]
 
 
 def _colorref(rgb_hex: str) -> int:
@@ -89,6 +101,11 @@ def icon_size() -> int:
     metric = user32.GetSystemMetrics(SM_CXSMICON) or 16
     dpi = get_dpi_for_system()
     return max(32, int(round(metric * 2 * dpi / 96)))
+
+
+def tray_icon_size() -> int:
+    """通知区域实际需要的像素尺寸；直接从 .ico 取对应档位更清晰。"""
+    return max(16, int(user32.GetSystemMetrics(SM_CXSMICON) or 16))
 
 
 def _rounded_mask(size: int) -> tuple[ctypes.Array, int]:
@@ -117,8 +134,48 @@ def _rounded_mask(size: int) -> tuple[ctypes.Array, int]:
     return bits, stride
 
 
+def load_icon_file(size: int) -> int:
+    """从 assets/app.ico 加载指定尺寸的 HICON；失败返回 0。"""
+    path = app_icon_path()
+    if not path:
+        return 0
+    try:
+        return int(
+            user32.LoadImageW(
+                None,
+                path,
+                IMAGE_ICON,
+                int(size),
+                int(size),
+                LR_LOADFROMFILE,
+            )
+            or 0
+        )
+    except Exception:
+        return 0
+
+
+def set_window_icon(window) -> None:
+    """给 Tk 窗口设置自定义图标；资源缺失或 Tk 不支持时静默跳过。"""
+    path = app_icon_path()
+    if not path:
+        return
+    try:
+        window.iconbitmap(path)
+    except Exception:
+        pass
+    try:
+        # 同时设为后续 Toplevel 的默认图标。
+        window.iconbitmap(default=path)
+    except Exception:
+        pass
+
+
 def create_tray_icon() -> int:
     size = icon_size()
+    file_icon = load_icon_file(tray_icon_size())
+    if file_icon:
+        return file_icon
     screen = user32.GetDC(None)
     if not screen:
         return 0

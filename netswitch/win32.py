@@ -192,6 +192,18 @@ def python_script() -> str:
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "net_switch.py")
 
 
+def asset_path(*parts: str) -> str:
+    """返回项目 assets 目录下的文件路径。"""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", *parts)
+
+
+def app_icon_path() -> str:
+    """返回自定义 .ico；资源缺失时返回空字符串，调用方回退到 exe 图标。"""
+    path = asset_path("app.ico")
+    return path if os.path.isfile(path) else ""
+
+
 def is_admin() -> bool:
     try:
         return bool(shell32.IsUserAnAdmin())

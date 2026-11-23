@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .config import Profile
+from .icons import set_window_icon
 from .netinfo import Adapter
 from .ui_common import (
     ACCENT,
@@ -161,6 +162,7 @@ class ManagerWindow:
         self.app = app
         self.win = tk.Toplevel(app.root)
         self.win.title("网络快捷切换 · 方案管理")
+        set_window_icon(self.win)
         self.win.configure(bg=BG)
         self.win.minsize(980, 660)
         self.win.protocol("WM_DELETE_WINDOW", self._on_close_request)

@@ -45,7 +45,7 @@
 
 ### 托盘常驻
 
-- 单图标（GDI 直接绘制，没有图片文件）。
+- 单图标：优先加载 `assets/app.ico`，缺失时才退回 GDI 直接绘制。
 - **左键**：打开简洁面板。
 - **右键**：菜单包含
   - 打开主界面 / 打开简洁面板 / 立即刷新
@@ -57,6 +57,17 @@
   销毁 Tk 根窗口 → 释放单实例互斥量。已验证不会留下僵尸进程。
 - 单实例：重复启动不会开第二个托盘，只会把已有实例的主界面/面板叫出来。
 - Windows 可能把新图标先放进「隐藏的图标」溢出区；右键任务栏 → 任务栏设置即可固定显示。
+
+### 自定义图标
+
+- 图标资源：`assets/app.ico`，包含 16/20/24/32/40/48/64/128/256 多尺寸；
+  `assets/app-256.png` 是预览图。
+- 设计：蓝色圆角底 + 两条反向白色箭头（快速切换）+ 绿色状态点。
+- 生成脚本：`tools/make_icon.py`，只用标准库自己绘制 RGBA、做 4 倍超采样、
+  写 PNG/ICO，**不需要 Pillow**。
+- 使用位置：主窗口、简洁面板、方案对话框、托盘、桌面 `.lnk`、启动文件夹 `.lnk`。
+- 任务管理器里的进程 exe 仍沿用 Python 的图标，因为 `网络快捷切换.exe` 是
+  `pythonw.exe` 的硬链接；窗口、托盘和快捷方式已经是自定义图标。
 
 ### 低 CPU / 无自动轮询
 
@@ -77,7 +88,7 @@ python net_switch.py --manage     # 主界面（默认）
 python net_switch.py --panel      # 简洁面板
 python net_switch.py --tray       # 只驻留托盘
 
-python net_switch.py --install    # 创建启动文件夹 .lnk + 桌面目录链接/文件链接
+python net_switch.py --install    # 创建启动文件夹 .lnk + 桌面目录链接/桌面快捷方式
 python net_switch.py --uninstall  # 删除启动项和桌面链接，保留项目与 settings.json
 python net_switch.py --once       # 打印当前网卡、当前配置、方案，然后退出
 python net_switch.py --quit       # 让正在运行的实例真正退出
@@ -87,7 +98,7 @@ python net_switch.py --version
 
 ### 建议启动方式
 
-- 日常双击桌面「网络快捷切换」（硬链接/符号链接到 `启动.pyw`）。
+- 日常双击桌面「网络快捷切换」快捷方式（`.lnk`，指向项目内的 `启动.pyw`）。
 - 开机自启使用「启动」文件夹里的 `网络快捷切换.lnk`，目标为
   `网络快捷切换.exe "…\net_switch.py" --tray`，**不会弹黑窗**，任务管理器进程名显示为
   「网络快捷切换」。
@@ -116,7 +127,7 @@ Windows 修改 IPv4/DNS 必须管理员权限。本项目**不常驻管理员权
 `网络快捷切换.exe net_switch.py --tray`）。**不建议**把启动项改成管理员计划任务，那会绕过
 用户对每次网络改动的知情确认。
 
-> ctypes 负责了网卡枚举、WLAN、托盘、GDI 图标、`.lnk` COM 和提权调用；
+> ctypes 负责了网卡枚举、WLAN、托盘、`.ico` 图标、`.lnk` COM 和提权调用；
 > 真正写 IPv4 时使用 Windows 自带的 `netsh` 与 PowerShell `Set-DnsClientServerAddress`。
 > 这是 Windows 上稳定、可验证的配置入口，避免依赖未公开的 IP Helper 写接口。
 
@@ -148,24 +159,28 @@ Windows 修改 IPv4/DNS 必须管理员权限。本项目**不常驻管理员权
 > 任务管理器里的进程名来自可执行文件名。`--install` 会在 Python 安装目录创建
 > `网络快捷切换.exe`（优先硬链接到 `pythonw.exe`，同目录才能正常找到 Python DLL/标准库；
 > 无权限时尝试复制）。如果该目录不可写，则退回 `pythonw.exe`，功能不受影响，但进程名仍是
-> `pythonw.exe`。桌面 `启动.pyw` 也会自动转交给 `网络快捷切换.exe` 启动。
+> `pythonw.exe`。项目内的 `启动.pyw` 也会自动转交给 `网络快捷切换.exe` 启动。
 
 ### 桌面入口
 
 | 桌面条目 | 类型 | 说明 |
 |---|---|---|
 | `网络快捷切换项目` | 目录链接 | 优先真符号链接；无权限时降级 `mklink /J` junction |
-| `网络快捷切换.pyw` | 文件链接 | 优先符号链接；无权限时降级 `os.link` 硬链接 |
+| `网络快捷切换.lnk` | 快捷方式 | 真正的 `.lnk`，指向项目内 `启动.pyw`，可跨盘使用 |
 
-两者都**不会复制项目文件**。桌面 `.pyw` 链接指向项目内的 `启动.pyw`；`--install`
-会把项目绝对路径写进该启动器（硬链接在桌面路径下无法反推项目位置）。
+两者都**不会复制项目文件**。`启动.pyw` 只使用自身所在目录定位项目和
+`net_switch.py`，不再写死安装时的绝对路径，因此整个项目文件夹可以复制到任意盘位
+直接运行。移动项目后，重新运行一次 `--install` 刷新桌面和启动项快捷方式即可。
 
-当前机器的普通权限进程创建目录符号链接失败，因此实测降级为：
+当前机器实测：
 
 ```
 网络快捷切换项目  Junction
-网络快捷切换.pyw  HardLink
+网络快捷切换.lnk  Shortcut
 ```
+
+不再对桌面启动器做硬链接或符号链接。旧版本留下的桌面 `网络快捷切换.pyw`
+硬链接会在下次 `--install` 时自动清理；它无法跨盘，是之前 WinError 17 的原因。
 
 ---
 
@@ -273,17 +288,20 @@ netswitch/
   wlan.py                  WLAN API 信号质量
   netcfg.py                netsh/PowerShell 写入、UAC、结果校验
   tray.py                  隐藏 Win32 窗口、Shell_NotifyIcon、托盘菜单
-  icons.py                 GDI 托盘图标（无图片文件）
+  icons.py                 图标加载、Tk 窗口图标、GDI 托盘图标兜底
   manager.py               主界面 / 方案列表 / 行内编辑删除
   compact.py               简洁面板 / 两张网卡卡片
   dialogs.py               新增/编辑方案对话框
   ui_common.py             深色主题、按钮、进度条
-  shortcuts.py             IShellLinkW .lnk、StartupApproved、符号链接/硬链接
+  shortcuts.py             IShellLinkW .lnk、StartupApproved、目录链接
   installer.py             安装/卸载入口
   win32.py                 DLL、GUID、Known Folder、DPI、窗口居中、进程启动器
-启动.pyw                    --install 生成的桌面启动器
+启动.pyw                    --install 生成的启动器（相对自身目录，可随项目移动）
 <Python 目录>\网络快捷切换.exe  硬链接/副本到 pythonw.exe，提供任务管理器进程名
 settings.json               配置（运行时生成；首次为空方案）
+assets/app.ico              应用图标（16–256 多尺寸）
+assets/app-256.png          图标预览图
+tools/make_icon.py          纯标准库图标生成脚本
 docs/                       截图
 ```
 
@@ -305,8 +323,9 @@ docs/                       截图
 | 任务管理器禁用后仍勾选 | 读取 `StartupApproved\StartupFolder` 的 02/03 状态 |
 | 高 DPI 字体/图标发虚 | 进程 Per-Monitor V2；Tk scaling；GDI 按 DPI 生成图标 |
 | 窗口底部被裁 | 用 Win32 工作区物理像素居中并限制尺寸 |
-| 桌面符号链接无权限 | 目录降级 junction，文件降级硬链接；不复制 |
-| 硬链接无法反推项目路径 | 安装时生成带绝对路径的 `启动.pyw` |
+| 桌面符号链接无权限 | 目录降级 junction；桌面启动入口改用 `.lnk`，不做文件链接 |
+| 桌面和项目不在同一盘 | 不再硬链接 `启动.pyw`，避免 `os.link` 跨盘 WinError 17 |
+| 项目移动后路径失效 | `启动.pyw` 用 `__file__` 定位自身；移动后重跑 `--install` 刷新快捷方式 |
 | 任务管理器进程名显示 pythonw.exe | `--install` 在 Python 目录创建 `网络快捷切换.exe`（硬链接/副本）；桌面启动器自动转交 |
 | `pythonw` 下看不到错误 | 不写日志；`--debug` 控制台模式排查；UI 用状态栏/对话框提示 |
 
@@ -330,7 +349,10 @@ docs/                       截图
 - 左键点击托盘图标打开简洁面板。
 - 启动文件夹 `.lnk`：target=`网络快捷切换.exe`，args=`"…\net_switch.py" --tray`，
   `StartupApproved` 为启用，任务管理器可见，进程名为「网络快捷切换」。
-- 桌面目录链接为 Junction，桌面文件链接为 HardLink，均指向项目，不是副本。
+- 桌面目录链接为 Junction；桌面 `网络快捷切换.lnk` 为真正快捷方式，指向项目内
+  `启动.pyw`，不是副本，也不跨盘硬链接。
+- 自定义图标：`assets/app.ico` 包含 9 个尺寸；主窗口和对话框已套用，
+  桌面/启动项 `.lnk` 的 `icon_location` 指向该文件，托盘从同一 `.ico` 加载。
 - 无自动刷新验证：启动后只保留 100ms 事件队列泵，没有刷新 `after` 回调；手动点「刷新」
   才重新读取。主界面底部只保留开机自启和「隐藏到托盘」勾选框，无刷新间隔输入框、
   状态行和退出按钮；「恢复默认」在右下角，权限状态展示在右上角。
@@ -355,7 +377,7 @@ python net_switch.py --uninstall
 
 - `%APPDATA%\…\Startup\网络快捷切换.lnk` 及 StartupApproved 值
 - 桌面 `网络快捷切换项目` 链接
-- 桌面 `网络快捷切换.pyw` 链接
+- 桌面 `网络快捷切换.lnk` 快捷方式（以及旧版 `网络快捷切换.pyw` 链接）
 
 保留：
 

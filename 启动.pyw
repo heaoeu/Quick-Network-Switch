@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
-# 由 --install 生成；桌面文件链接指向此文件。
+# 由 --install 生成；路径相对于本文件，移动项目后仍可用。
 import os
 import runpy
 import subprocess
 import sys
 sys.dont_write_bytecode = True
-PROJECT = 'C:\\Users\\HY\\Documents\\deepseek-harness\\default-workspace\\net-switch'
-os.chdir(PROJECT)
-SCRIPT = 'C:\\Users\\HY\\Documents\\deepseek-harness\\default-workspace\\net-switch\\net_switch.py'
+PROJECT = os.path.dirname(os.path.abspath(__file__))
+SCRIPT = os.path.join(PROJECT, "net_switch.py")
 MODE = '--manage'
-APP_EXE = 'D:\\Develop\\Python\\python\\网络快捷切换.exe'
-if os.path.isfile(APP_EXE) and os.path.normcase(os.path.basename(sys.executable)) != os.path.normcase(os.path.basename(APP_EXE)):
+os.chdir(PROJECT)
+sys.path.insert(0, PROJECT)
+APP_EXE = ''
+try:
+    from netswitch.win32 import ensure_app_executable
+    APP_EXE = ensure_app_executable()
+except Exception:
+    pass
+if APP_EXE and os.path.isfile(APP_EXE) and os.path.normcase(os.path.abspath(APP_EXE)) != os.path.normcase(os.path.abspath(sys.executable)):
     try:
         subprocess.Popen([APP_EXE, SCRIPT, MODE], cwd=PROJECT, creationflags=0x08000000, close_fds=True)
         raise SystemExit(0)

@@ -1,7 +1,8 @@
-"""启动文件夹快捷方式、StartupApproved 状态、桌面符号链接/硬链接。
+"""启动文件夹快捷方式、StartupApproved 状态、桌面快捷方式。
 
-纯 ctypes + COM 调 IShellLinkW / IPersistFile；目录链接优先 os.symlink，
-无权限时降级 mklink /J；文件链接优先符号链接，再降级 os.link。
+纯 ctypes + COM 调 IShellLinkW / IPersistFile。桌面入口使用真正的 .lnk
+快捷方式，不再对启动器做硬链接/符号链接，因此项目文件夹可以放在任意
+盘位；移动后重新运行一次 --install 即可刷新快捷方式。
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from .win32 import (
     APP_EXE_NAME,
     CREATE_NO_WINDOW,
     GUID,
+    app_icon_path,
     ensure_app_executable,
     guid_from_string,
     ole32,
@@ -36,16 +38,21 @@ SL_SETWORKINGDIRECTORY = 9
 SL_GETARGUMENTS = 10
 SL_SETARGUMENTS = 11
 SL_SETDESCRIPTION = 7
+SL_GETICONLOCATION = 16
 SL_SETICONLOCATION = 17
 SL_SETPATH = 20
 
 PF_LOAD = 5
 PF_SAVE = 6
 
+SHCNE_ASSOCCHANGED = 0x08000000
+SHCNF_IDLIST = 0x0000
+
 APP_NAME = "网络快捷切换"
 STARTUP_LNK_NAME = APP_NAME + ".lnk"
 DESKTOP_DIR_NAME = APP_NAME + "项目"
-DESKTOP_FILE_NAME = APP_NAME + ".pyw"
+DESKTOP_FILE_NAME = APP_NAME + ".lnk"
+LEGACY_DESKTOP_FILE_NAME = APP_NAME + ".pyw"
 LAUNCHER_NAME = "启动.pyw"
 
 _ole_initialized = False
@@ -149,7 +156,7 @@ def create_shortcut(
         _release(link)
 
 
-def read_shortcut(lnk_path: str | os.PathLike[str]) -> dict[str, str]:
+def read_shortcut(lnk_path: str | os.PathLike[str]) -> dict[str, object]:
     _ensure_ole()
     link = _create_shell_link()
     persist = ctypes.c_void_p()
@@ -185,14 +192,41 @@ def read_shortcut(lnk_path: str | os.PathLike[str]) -> dict[str, str]:
         _vtable_method(link, SL_GETWORKINGDIRECTORY, ctypes.c_long, [wintypes.LPWSTR, ctypes.c_int])(
             link, wd_buf, len(wd_buf)
         )
+
+        icon_buf = ctypes.create_unicode_buffer(32768)
+        icon_index = ctypes.c_int(0)
+        _vtable_method(
+            link,
+            SL_GETICONLOCATION,
+            ctypes.c_long,
+            [wintypes.LPWSTR, ctypes.c_int, ctypes.POINTER(ctypes.c_int)],
+        )(link, icon_buf, len(icon_buf), ctypes.byref(icon_index))
         return {
             "target": path_buf.value,
             "arguments": args_buf.value,
             "working_directory": wd_buf.value,
+            "icon_location": icon_buf.value,
+            "icon_index": int(icon_index.value),
         }
     finally:
         _release(persist)
         _release(link)
+
+
+def notify_shell_changed() -> None:
+    """让 Explorer 刷新快捷方式图标缓存。"""
+    try:
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        shell32.SHChangeNotify.restype = None
+        shell32.SHChangeNotify.argtypes = [
+            wintypes.LONG,
+            wintypes.UINT,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
+    except Exception:
+        pass
 
 
 def _read_approved_raw() -> bytes | None:
@@ -279,6 +313,7 @@ def set_startup_enabled(
     project_dir: str,
     script_path: str,
     description: str = APP_NAME,
+    force: bool = False,
 ) -> dict:
     """用户主动勾选/取消勾选时才写入；程序启动时不自动修复。"""
     lnk = startup_shortcut_path()
@@ -288,14 +323,14 @@ def set_startup_enabled(
     args = f'"{script_path}" --tray'
     wanted_target = os.path.normcase(os.path.abspath(exe))
     current_target = os.path.normcase(os.path.abspath(state.get("target", "")))
-    if not state["exists"] or current_target != wanted_target or not state["args_ok"]:
+    if force or not state["exists"] or current_target != wanted_target or not state["args_ok"]:
         create_shortcut(
             lnk,
             exe,
             arguments=args,
             working_directory=project_dir,
             description=description,
-            icon_location=exe,
+            icon_location=app_icon_path() or exe,
         )
     if enabled:
         _write_approved_raw(b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
@@ -318,23 +353,28 @@ def remove_startup_shortcut() -> None:
 
 
 def write_launcher(project_dir: str, script_path: str, mode: str = "--manage") -> Path:
-    """写项目内的启动器；桌面文件链接（硬链接）共享同一内容。"""
+    """写项目内的启动器；只使用自身所在目录，可随项目整体移动。"""
     path = Path(project_dir) / LAUNCHER_NAME
-    app_exe = ensure_app_executable()
     content = (
         "# -*- coding: utf-8 -*-\n"
-        "# 由 --install 生成；桌面文件链接指向此文件。\n"
+        "# 由 --install 生成；路径相对于本文件，移动项目后仍可用。\n"
         "import os\n"
         "import runpy\n"
         "import subprocess\n"
         "import sys\n"
         "sys.dont_write_bytecode = True\n"
-        f"PROJECT = {project_dir!r}\n"
-        "os.chdir(PROJECT)\n"
-        f"SCRIPT = {script_path!r}\n"
+        "PROJECT = os.path.dirname(os.path.abspath(__file__))\n"
+        'SCRIPT = os.path.join(PROJECT, "net_switch.py")\n'
         f"MODE = {mode!r}\n"
-        f"APP_EXE = {app_exe!r}\n"
-        "if os.path.isfile(APP_EXE) and os.path.normcase(os.path.basename(sys.executable)) != os.path.normcase(os.path.basename(APP_EXE)):\n"
+        "os.chdir(PROJECT)\n"
+        "sys.path.insert(0, PROJECT)\n"
+        "APP_EXE = ''\n"
+        "try:\n"
+        "    from netswitch.win32 import ensure_app_executable\n"
+        "    APP_EXE = ensure_app_executable()\n"
+        "except Exception:\n"
+        "    pass\n"
+        "if APP_EXE and os.path.isfile(APP_EXE) and os.path.normcase(os.path.abspath(APP_EXE)) != os.path.normcase(os.path.abspath(sys.executable)):\n"
         "    try:\n"
         "        subprocess.Popen([APP_EXE, SCRIPT, MODE], cwd=PROJECT, creationflags=0x08000000, close_fds=True)\n"
         "        raise SystemExit(0)\n"
@@ -375,20 +415,43 @@ def _remove_broken_link(link: Path) -> None:
     try:
         if link.is_symlink():
             link.unlink()
+        elif _is_directory_link(link):
+            link.rmdir()
     except OSError:
         pass
+
+
+def _is_directory_link(link: Path) -> bool:
+    try:
+        if link.is_symlink():
+            return True
+        is_junction = getattr(link, "is_junction", None)
+        return bool(is_junction and is_junction())
+    except OSError:
+        return False
+
+
+def _remove_directory_link(link: Path) -> None:
+    if link.is_symlink():
+        link.unlink()
+    else:
+        link.rmdir()
 
 
 def ensure_directory_link(link: Path, target: Path) -> str:
     link = Path(link)
     target = Path(target)
-    if link.exists() or link.is_symlink():
+    if link.exists() or link.is_symlink() or _is_directory_link(link):
         if _same_target(str(link), str(target)):
             try:
                 return "symlink" if link.is_symlink() else "junction"
             except OSError:
                 return "junction"
-        raise FileExistsError(f"桌面已存在同名项目，但它不是指向本项目的链接：{link}")
+        if _is_directory_link(link):
+            # 项目换盘后，旧的 junction/symlink 指向已失效；替换为新的。
+            _remove_directory_link(link)
+        else:
+            raise FileExistsError(f"桌面已存在同名项目，但它不是指向本项目的链接：{link}")
     link.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.symlink(str(target), str(link), target_is_directory=True)
@@ -401,42 +464,3 @@ def ensure_directory_link(link: Path, target: Path) -> str:
     if not ok or not _same_target(str(link), str(target)):
         raise OSError(f"创建目录链接失败：{output.strip() or 'mklink /J 失败'}")
     return "junction"
-
-
-def ensure_file_link(link: Path, target: Path) -> str:
-    link = Path(link)
-    target = Path(target)
-    if link.exists() or link.is_symlink():
-        if _same_target(str(link), str(target)):
-            return "symlink" if link.is_symlink() else "hardlink"
-        raise FileExistsError(f"桌面已存在同名文件，但它不是指向启动脚本的链接：{link}")
-    link.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.symlink(str(target), str(link))
-        if _same_target(str(link), str(target)):
-            return "symlink"
-    except OSError:
-        pass
-    _remove_broken_link(link)
-    try:
-        os.link(str(target), str(link))
-        return "hardlink"
-    except OSError as exc:
-        raise OSError(f"创建文件链接失败（符号链接与硬链接均失败）：{exc}") from exc
-
-
-def link_kind(path: Path) -> str:
-    path = Path(path)
-    try:
-        if path.is_symlink():
-            return "symlink"
-    except OSError:
-        pass
-    try:
-        if path.is_dir():
-            return "junction"
-        if path.exists():
-            return "hardlink"
-    except OSError:
-        pass
-    return "missing"

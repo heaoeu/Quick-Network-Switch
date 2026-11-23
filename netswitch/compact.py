@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tkinter as tk
 
+from .icons import set_window_icon
 from .netinfo import Adapter
 from .ui_common import (
     ACCENT,
@@ -119,6 +120,7 @@ class CompactWindow:
         self.app = app
         self.win = tk.Toplevel(app.root)
         self.win.title("网络快捷切换")
+        set_window_icon(self.win)
         self.win.configure(bg=BG)
         self.win.resizable(False, False)
         self.win.protocol("WM_DELETE_WINDOW", self.hide)

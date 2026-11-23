@@ -4,6 +4,7 @@ from __future__ import annotations
 import tkinter as tk
 
 from .config import Profile, validate_profile_fields
+from .icons import set_window_icon
 from .ui_common import (
     ACCENT,
     ACCENT_DARK,
@@ -33,6 +34,7 @@ class ProfileDialog:
         self.clear_buttons: dict[str, tk.Label] = {}
         self.win = tk.Toplevel(parent)
         self.win.title("编辑方案" if self.editing else "新增方案")
+        set_window_icon(self.win)
         self.win.configure(bg=BG)
         self.win.resizable(False, False)
         self.win.transient(parent)
